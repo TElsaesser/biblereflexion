@@ -41,6 +41,19 @@ export default async function handler(req, res) {
 
   const { messages = [] } = req.body
 
+  // SSE-Stream: schickt sofort Daten, verhindert Cloudflare-Timeout
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no'
+  })
+
+  // Heartbeat alle 15s damit Cloudflare die Verbindung offen hält
+  const heartbeat = setInterval(() => {
+    if (!res.writableEnded) res.write(': heartbeat\n\n')
+  }, 15000)
+
   try {
     const response = await fetch(`${ONE_API_BASE}/chat/completions`, {
       method: 'POST',
@@ -53,41 +66,51 @@ export default async function handler(req, res) {
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
           ...messages,
-          {
-            role: 'user',
-            content: 'Bitte erstelle jetzt die Auswertung mit Zusammenfassung und 3 Bibelstellen als JSON.'
-          }
+          { role: 'user', content: 'Bitte erstelle jetzt die Auswertung mit Zusammenfassung und 3 Bibelstellen als JSON.' }
         ],
         max_tokens: 2500,
         temperature: 0.6
       })
     })
 
+    clearInterval(heartbeat)
+
     if (!response.ok) {
       const err = await response.text()
       console.error('AI API error:', err)
-      return res.status(502).json({ error: 'AI API error' })
+      res.write(`data: ${JSON.stringify({ error: 'AI API error' })}\n\n`)
+      res.end()
+      return
     }
 
     const data = await response.json()
     let content = data.choices?.[0]?.message?.content?.trim() || ''
-
     content = content.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '')
 
     const jsonMatch = content.match(/\{[\s\S]*\}/)
     if (!jsonMatch) {
-      console.error('No JSON object in reflect response:', content.slice(0, 200))
-      return res.status(502).json({ error: 'Ungültiges Antwortformat von KI' })
+      console.error('No JSON in reflect response:', content.slice(0, 200))
+      res.write(`data: ${JSON.stringify({ error: 'Ungültiges Antwortformat' })}\n\n`)
+      res.end()
+      return
     }
+
     const parsed = JSON.parse(jsonMatch[0])
 
     if (!parsed.summary || !Array.isArray(parsed.passages) || parsed.passages.length !== 3) {
-      return res.status(502).json({ error: 'Ungültiges Antwortformat von KI' })
+      res.write(`data: ${JSON.stringify({ error: 'Ungültiges Antwortformat' })}\n\n`)
+      res.end()
+      return
     }
 
-    return res.json(parsed)
+    res.write(`data: ${JSON.stringify(parsed)}\n\n`)
+    res.end()
   } catch (err) {
+    clearInterval(heartbeat)
     console.error('Handler error:', err)
-    return res.status(500).json({ error: 'Internal server error' })
+    if (!res.writableEnded) {
+      res.write(`data: ${JSON.stringify({ error: 'Internal server error' })}\n\n`)
+      res.end()
+    }
   }
 }

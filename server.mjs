@@ -6,7 +6,6 @@ import process from 'process'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
-// Lade .env
 try {
   const env = readFileSync(join(__dirname, '.env'), 'utf8')
   for (const line of env.split('\n')) {
@@ -15,7 +14,7 @@ try {
   }
 } catch {}
 
-const PORT = process.env.PORT || 3001
+const PORT = process.env.PORT || 3002
 
 const server = http.createServer(async (req, res) => {
   if (req.method !== 'POST' || !req.url.startsWith('/api/')) {
@@ -29,24 +28,27 @@ const server = http.createServer(async (req, res) => {
       req.body = JSON.parse(body || '{}')
     } catch { req.body = {} }
 
-    const mockRes = {
-      _status: 200, _body: null,
-      status(code) { this._status = code; return this },
-      json(data) { this._body = data; return this }
+    // Attach Express-style helpers to native res
+    res.status = (code) => { res.statusCode = code; return res }
+    res.json = (data) => {
+      if (!res.headersSent) {
+        res.writeHead(res.statusCode || 200, { 'Content-Type': 'application/json' })
+      }
+      res.end(JSON.stringify(data))
+      return res
     }
 
     try {
-      const route = req.url.replace('/api/', '')
+      const route = req.url.replace('/api/', '').split('?')[0]
       const mod = await import(`./api/${route}.js?t=${Date.now()}`)
-      await mod.default(req, mockRes)
+      await mod.default(req, res)
     } catch (err) {
       console.error(err)
-      mockRes._status = 500
-      mockRes._body = { error: 'Internal server error' }
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+      }
+      if (!res.writableEnded) res.end(JSON.stringify({ error: 'Internal server error' }))
     }
-
-    res.writeHead(mockRes._status, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify(mockRes._body))
   })
 })
 
