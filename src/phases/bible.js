@@ -14,7 +14,10 @@ export async function renderBible(data, loggingEnabled) {
     <div class="bible-card">
       <div class="bible-card-header">
         <div class="bible-card-number">${i + 1}</div>
-        <div class="bible-card-ref">${p.reference}</div>
+        <div class="bible-card-header-text">
+          ${p.title ? `<div class="bible-card-title">${p.title}</div>` : ''}
+          <div class="bible-card-ref">${p.reference}</div>
+        </div>
       </div>
       <div class="bible-card-body">
         <div class="bible-text" id="bible-text-${i}">

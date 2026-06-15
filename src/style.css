@@ -698,8 +698,21 @@ body::before {
 
 .bible-card-ref {
   font-family:var(--serif);
+  font-size:.78rem;
+  color:rgba(255,255,255,.5);
+}
+
+.bible-card-header-text {
+  display:flex;
+  flex-direction:column;
+  gap:2px;
+}
+
+.bible-card-title {
   font-size:.95rem;
+  font-weight:600;
   color:var(--text);
+  line-height:1.3;
 }
 
 .bible-card-body {

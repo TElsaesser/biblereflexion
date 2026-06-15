@@ -11,7 +11,13 @@ const OPENING_TOPICS = [
   { key: 'F', label: 'Schuld, Versagen oder Vergebung',            icon: '🤍' },
   { key: 'G', label: 'Einsamkeit oder Konflikte',                  icon: '🤝' },
   { key: 'H', label: 'Sehnsucht nach Gottes Nähe / Sinnfragen',   icon: '✨' },
-  { key: 'I', label: 'Etwas anderes …',                            icon: '💬' },
+  { key: 'I', label: 'Hoffnung oder Aufbruch',                     icon: '🌅' },
+  { key: 'J', label: 'Zweifel oder Glaubensfragen',                icon: '🌊' },
+  { key: 'K', label: 'Krankheit oder körperliche Belastung',       icon: '🕯️' },
+  { key: 'L', label: 'Familiäre Sorgen oder Verantwortung',        icon: '👨‍👩‍👧' },
+  { key: 'M', label: 'Veränderung oder neuer Lebensabschnitt',     icon: '🔄' },
+  { key: 'N', label: 'Sehnsucht nach Frieden oder Versöhnung',     icon: '🕊️' },
+  { key: 'O', label: 'Leistungsdruck oder Erwartungen',            icon: '💼' },
 ]
 
 export function renderChat(loggingEnabled, onComplete) {
@@ -121,15 +127,8 @@ export function renderChat(loggingEnabled, onComplete) {
       btn.textContent = s
       btn.addEventListener('click', () => {
         if (waiting) return
-        const isOther = s.toLowerCase().startsWith('etwas anderes')
         removeSuggestions()
-        if (isOther) {
-          inputEl.disabled = false
-          sendBtn.disabled = false
-          inputEl.focus()
-        } else {
-          commitAnswer(s)
-        }
+        commitAnswer(s)
       })
       wrap.appendChild(btn)
     })
@@ -183,13 +182,6 @@ export function renderChat(loggingEnabled, onComplete) {
       btn.innerHTML = `<span class="topic-icon">${t.icon}</span><span class="topic-label">${t.label}</span>`
       btn.addEventListener('click', () => {
         if (waiting) return
-        if (t.key === 'I') {
-          removeTopicGrid()
-          inputEl.disabled = false
-          sendBtn.disabled = false
-          inputEl.focus()
-          return
-        }
         removeTopicGrid()
         commitAnswer(t.label)
       })
@@ -198,10 +190,14 @@ export function renderChat(loggingEnabled, onComplete) {
 
     messagesEl.appendChild(grid)
     scrollToBottom()
+
+    inputEl.disabled = false
+    sendBtn.disabled = false
+    inputEl.placeholder = 'Oder direkt beschreiben …'
   }
 
   // ── Adaptive Folgefragen via API ──────────────────────────────────
-  async function askNext() {
+  async function askNext(retryCount = 0) {
     waiting = true
     inputEl.disabled = true
     sendBtn.disabled = true
@@ -213,7 +209,7 @@ export function renderChat(loggingEnabled, onComplete) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages, questionCount })
       })
-      if (!res.ok) throw new Error('API-Fehler')
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       removeTyping()
 
@@ -232,8 +228,15 @@ export function renderChat(loggingEnabled, onComplete) {
       showSuggestions(data.suggestions)
       inputEl.disabled = false
       sendBtn.disabled = false
+      inputEl.placeholder = 'Eigene Antwort eingeben …'
+      inputEl.focus()
     } catch {
       removeTyping()
+      if (retryCount < 2) {
+        // Stille Wiederholung ohne Fehlermeldung
+        setTimeout(() => askNext(retryCount + 1), 1500)
+        return
+      }
       addBubble('assistant', 'Es gab einen technischen Fehler – bitte versuche es erneut.')
       inputEl.disabled = false
       sendBtn.disabled = false
