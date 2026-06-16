@@ -41,7 +41,7 @@ export default async function handler(req, res) {
 
   const { messages = [] } = req.body
 
-  // SSE-Stream: schickt sofort Daten, verhindert Cloudflare-Timeout
+  // SSE-Headers: Browser-Verbindung offen halten
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -49,13 +49,9 @@ export default async function handler(req, res) {
     'X-Accel-Buffering': 'no'
   })
 
-  // Heartbeat alle 15s damit Cloudflare die Verbindung offen hält
-  const heartbeat = setInterval(() => {
-    if (!res.writableEnded) res.write(': heartbeat\n\n')
-  }, 15000)
-
   try {
-    const response = await fetch(`${ONE_API_BASE}/chat/completions`, {
+    // stream:true — One-API bekommt sofort Tokens, kein Idle-Timeout
+    const aiRes = await fetch(`${ONE_API_BASE}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -63,6 +59,7 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: MODEL,
+        stream: true,
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
           ...messages,
@@ -73,20 +70,42 @@ export default async function handler(req, res) {
       })
     })
 
-    clearInterval(heartbeat)
-
-    if (!response.ok) {
-      const err = await response.text()
+    if (!aiRes.ok) {
+      const err = await aiRes.text()
       console.error('AI API error:', err)
       res.write(`data: ${JSON.stringify({ error: 'AI API error' })}\n\n`)
       res.end()
       return
     }
 
-    const data = await response.json()
-    let content = data.choices?.[0]?.message?.content?.trim() || ''
-    content = content.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '')
+    // Stream von One-API lesen und Tokens akkumulieren
+    const reader = aiRes.body.getReader()
+    const decoder = new TextDecoder()
+    let accumulated = ''
+    let buffer = ''
 
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop()
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const payload = line.slice(6).trim()
+        if (payload === '[DONE]') continue
+        try {
+          const chunk = JSON.parse(payload)
+          const token = chunk.choices?.[0]?.delta?.content || ''
+          accumulated += token
+        } catch {}
+      }
+    }
+
+    // Vollständigen JSON parsen
+    const content = accumulated.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim()
     const jsonMatch = content.match(/\{[\s\S]*\}/)
     if (!jsonMatch) {
       console.error('No JSON in reflect response:', content.slice(0, 200))
@@ -105,8 +124,8 @@ export default async function handler(req, res) {
 
     res.write(`data: ${JSON.stringify(parsed)}\n\n`)
     res.end()
+
   } catch (err) {
-    clearInterval(heartbeat)
     console.error('Handler error:', err)
     if (!res.writableEnded) {
       res.write(`data: ${JSON.stringify({ error: 'Internal server error' })}\n\n`)

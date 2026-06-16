@@ -53,3 +53,5 @@ const server = http.createServer(async (req, res) => {
 })
 
 server.listen(PORT, () => console.log(`API server running on port ${PORT}`))
+server.timeout = 0          // kein automatischer Socket-Timeout
+server.keepAliveTimeout = 0

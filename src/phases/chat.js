@@ -84,7 +84,7 @@ export function renderChat(loggingEnabled, onComplete) {
     progressText.textContent = `Schritt ${questionCount + 1} von max. ${MAX_QUESTIONS}`
     progressFill.style.width = `${Math.max(10, (questionCount / MAX_QUESTIONS) * 100)}%`
     const finishBtn = document.getElementById('finish-btn')
-    if (finishBtn) finishBtn.style.display = questionCount >= 5 ? 'inline-flex' : 'none'
+    if (finishBtn) finishBtn.style.display = questionCount >= 1 ? 'inline-flex' : 'none'
   }
 
   function scrollToBottom() {
