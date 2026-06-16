@@ -9,6 +9,7 @@
     "api": "node api-dev-server.mjs"
   },
   "dependencies": {
+    "marked": "^18.0.5",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {

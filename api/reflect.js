@@ -89,7 +89,7 @@ async function searchCandidates(query) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query, n: 25, diversity: 0.35 }),
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(25000),
     })
     if (!res.ok) return null
     const candidates = await res.json()
@@ -273,20 +273,64 @@ export default async function handler(req, res) {
           const fallback = candidates.find(c => !usedCandidateIds.has(c.id))
           if (fallback) {
             console.warn(`Halluzination ersetzt: "${passage.reference}" → "${fallback.reference}"`)
+            // explanation und title gehören zur halluzinierten Stelle → verwerfen
             parsed.passages[i] = {
-              ...passage,
               reference:  fallback.reference,
               book:       fallback.book,
               chapter:    fallback.chapter,
               startVerse: fallback.start_verse,
               endVerse:   fallback.end_verse,
               testament:  fallback.testament,
-              title:      passage.title || fallback.heading,
+              title:      fallback.heading || fallback.reference,
+              explanation: fallback.summary || '',
+              _needs_explanation: true,
             }
             usedCandidateIds.add(fallback.id)
           }
         }
       }
+    }
+
+    // Fehlende Deutungen für ersetzte Halluzinationen nachholen
+    const needsExplanation = parsed.passages.filter(p => p._needs_explanation)
+    if (needsExplanation.length > 0) {
+      const situationSummary = parsed.summary
+      const explPrompt = `Du bist ein geistlicher Begleiter. Die Lebenssituation der Person:\n"${situationSummary}"\n\n` +
+        needsExplanation.map(p =>
+          `Bibelstelle: ${p.reference}\nText: ${(p.explanation || '').slice(0, 400)}\n` +
+          `Schreibe eine persönliche Deutung (8-10 Sätze): Was sagt dieser Text der Person in ihrer Situation?`
+        ).join('\n\n') +
+        `\n\nAntworte als JSON-Array mit einem Objekt pro Stelle:\n[{"reference":"...","title":"kurze Überschrift 4-6 Wörter","explanation":"..."}]`
+
+      try {
+        const exRes = await fetch(`${ONE_API_BASE}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${ONE_API_KEY}` },
+          body: JSON.stringify({ model: MODEL, stream: false,
+            messages: [{ role: 'user', content: explPrompt }], max_tokens: 1200, temperature: 0.6 })
+        })
+        if (exRes.ok) {
+          const exData = await exRes.json()
+          const exContent = exData.choices?.[0]?.message?.content?.trim() || ''
+          const exMatch = exContent.match(/\[[\s\S]*\]/)
+          if (exMatch) {
+            const exParsed = JSON.parse(exMatch[0])
+            for (const p of parsed.passages) {
+              if (!p._needs_explanation) continue
+              const ex = exParsed.find(e => e.reference === p.reference)
+              if (ex) {
+                p.title = ex.title || p.title
+                p.explanation = ex.explanation || p.explanation
+              }
+              delete p._needs_explanation
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Erklärung-Nachholung fehlgeschlagen:', e.message)
+      }
+      // _needs_explanation flag bereinigen auch wenn Nachholung fehlschlug
+      for (const p of parsed.passages) delete p._needs_explanation
     }
 
     console.log(`Reflect fertig: RAG=${useRAG}, Stellen: ${parsed.passages.map(p=>p.reference).join(', ')}`)

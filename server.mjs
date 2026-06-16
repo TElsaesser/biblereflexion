@@ -17,15 +17,15 @@ try {
 const PORT = process.env.PORT || 3002
 
 const server = http.createServer(async (req, res) => {
-  if (req.method !== 'POST' || !req.url.startsWith('/api/')) {
+  if ((req.method !== 'POST' && req.method !== 'GET') || !req.url.startsWith('/api/')) {
     res.writeHead(404); res.end(); return
   }
 
-  let body = ''
-  req.on('data', chunk => body += chunk)
+  let body = Buffer.alloc(0)
+  req.on('data', chunk => { body = Buffer.concat([body, chunk]) })
   req.on('end', async () => {
     try {
-      req.body = JSON.parse(body || '{}')
+      req.body = JSON.parse(body.toString('utf8') || '{}')
     } catch { req.body = {} }
 
     // Attach Express-style helpers to native res

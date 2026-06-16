@@ -22,7 +22,10 @@ from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
 import httpx
 
-load_dotenv(Path(__file__).parent.parent / ".env")
+# .env laden — lokaler Symlink oder Elternverzeichnis (lokale Entwicklung)
+_script_dir = Path(__file__).parent
+load_dotenv(_script_dir / ".env")              # /opt/bible-search/.env (Symlink auf Prod)
+load_dotenv(_script_dir.parent / ".env")       # Fallback: lokale Entwicklung
 
 ONE_API_BASE = os.getenv("ONE_API_BASE_URL", "https://ai.ytels.de/v1")
 ONE_API_KEY  = os.getenv("ONE_API_KEY", "")
