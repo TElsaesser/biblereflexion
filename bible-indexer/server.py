@@ -31,7 +31,15 @@ ONE_API_BASE = os.getenv("ONE_API_BASE_URL", "https://ai.ytels.de/v1")
 ONE_API_KEY  = os.getenv("ONE_API_KEY", "")
 MODEL_NAME   = os.getenv("ONE_API_MODEL", "deepseek-ai/DeepSeek-V4-Flash")
 EMBED_MODEL  = "intfloat/multilingual-e5-large"
-CHROMA_PATH  = Path(__file__).parent / "chroma_db"
+
+# Version-Switch: BIBLE_INDEX_VERSION=v2 → chroma_db_v2, sonst chroma_db
+_version = os.getenv("BIBLE_INDEX_VERSION", "").lower()
+if _version == "v2":
+    CHROMA_PATH      = Path(__file__).parent / "chroma_db_v2"
+    COLLECTION_NAME  = "bible_sections_v2"
+else:
+    CHROMA_PATH      = Path(__file__).parent / "chroma_db"
+    COLLECTION_NAME  = "bible_sections"
 
 app = FastAPI(title="Bible Vector Search")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -52,8 +60,8 @@ def get_collection():
     global _collection
     if _collection is None:
         client = chromadb.PersistentClient(path=str(CHROMA_PATH))
-        _collection = client.get_collection("bible_sections")
-        print(f"ChromaDB geladen: {_collection.count()} Abschnitte")
+        _collection = client.get_collection(COLLECTION_NAME)
+        print(f"ChromaDB geladen: {_collection.count()} Abschnitte (Version: {_version or 'v1'}, Collection: {COLLECTION_NAME})")
     return _collection
 
 # ── Bekannte populäre Stellen → Popularitäts-Penalty ─────────────────
@@ -65,6 +73,36 @@ POPULAR_IDS = {
     "Jes_43_1", "Ps_139_1", "Spr_3_5", "Mt_28_20", "1.Petr_5_7",
 }
 POPULARITY_PENALTY = 0.10
+
+# Feedback-Datei (geschrieben von api/feedback.js)
+FEEDBACK_FILE = Path(__file__).parent.parent / "data" / "feedback.json"
+
+def load_feedback() -> dict:
+    try:
+        return json.loads(FEEDBACK_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+def feedback_score_delta(section_id: str, feedback: dict) -> float:
+    """
+    Berechnet Score-Delta aus Nutzer-Feedback.
+    too_common  → Penalty  (bis -0.15)
+    good        → kleiner Bonus (+0.03 pro Stimme, max +0.06)
+    great       → mittlerer Bonus (+0.06 pro Stimme, max +0.12)
+    favorite    → großer Bonus (+0.08 pro Stimme, max +0.16)
+    """
+    base_id = re.sub(r"_\d+$", "", section_id)
+    scores  = feedback.get(base_id) or feedback.get(section_id, {})
+    if not scores:
+        return 0.0
+
+    penalty = min(scores.get("too_common", 0) * 0.05, 0.15)
+    bonus   = (
+        min(scores.get("good",     0) * 0.03, 0.06) +
+        min(scores.get("great",    0) * 0.06, 0.12) +
+        min(scores.get("favorite", 0) * 0.08, 0.16)
+    )
+    return bonus - penalty
 
 # ── Pydantic-Modelle ──────────────────────────────────────────────────
 
@@ -309,8 +347,9 @@ async def search(req: SearchRequest):
                 seen_ids.add(id_)
 
     # Bereits gezeigte ausschließen
-    exclude = set(req.exclude_ids)
-    candidates = []
+    exclude       = set(req.exclude_ids)
+    feedback_data = load_feedback()
+    candidates    = []
     for id_, meta, doc, emb, dist in zip(all_ids, all_metas, all_docs, all_embs, all_dists):
         if id_ in exclude:
             continue
@@ -339,7 +378,10 @@ async def search(req: SearchRequest):
         sec_intensity    = meta.get("intensity", "")
         intensity_bonus  = 0.02 if intent_intensity and intent_intensity == sec_intensity else 0.0
 
-        final_score = raw_sim + meta_bonus + intensity_bonus - popularity_penalty
+        # Nutzer-Feedback einrechnen
+        fb_delta = feedback_score_delta(id_, feedback_data)
+
+        final_score = raw_sim + meta_bonus + intensity_bonus - popularity_penalty + fb_delta
 
         candidates.append({
             "id":         id_,
@@ -352,6 +394,7 @@ async def search(req: SearchRequest):
                 "meta_bonus": round(meta_bonus, 4),
                 "intensity":  round(intensity_bonus, 4),
                 "popularity": round(-popularity_penalty, 4),
+                "feedback":   round(fb_delta, 4),
                 "total":      round(final_score, 4),
             }
         })

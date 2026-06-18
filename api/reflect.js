@@ -3,6 +3,8 @@ const ONE_API_KEY   = process.env.ONE_API_KEY || ''
 const MODEL         = process.env.ONE_API_MODEL || 'gpt-4o'
 const BIBLE_SEARCH  = process.env.BIBLE_SEARCH_URL || 'http://localhost:3003'
 
+import { incrementStats } from './stats.js'
+
 // ── Prompts ───────────────────────────────────────────────────────────
 
 const SYSTEM_PROMPT_RAG = `Du erhältst ein Reflexionsgespräch und eine vorselektierte Liste von Bibelabschnitten aus der Elberfelder Bibel 2006.
@@ -19,7 +21,7 @@ Deine Aufgabe:
    Verbinde konkret mit Elementen aus dem Gespräch.
    Schreibe warm, zugewandt und meditativ – nicht belehrend.
 
-WICHTIG: Verwende AUSSCHLIESSLICH Stellen aus der bereitgestellten Liste [1]–[25]. Erfinde keine eigenen Referenzen. Wenn du eine Stelle wählst, übernimm die Referenz exakt so wie sie in der Liste steht (z.B. "Hiob 7,1–21" nicht "Hiob 7:1-21").
+WICHTIG: Verwende AUSSCHLIESSLICH Stellen aus der bereitgestellten Liste [1]–[15]. Erfinde keine eigenen Referenzen. Wenn du eine Stelle wählst, übernimm die Referenz exakt so wie sie in der Liste steht (z.B. "Hiob 7,1–21" nicht "Hiob 7:1-21").
 
 Antworte AUSSCHLIESSLICH als valides JSON ohne Markdown:
 {
@@ -83,12 +85,12 @@ function buildSearchQuery(messages) {
     .slice(0, 800)
 }
 
-async function searchCandidates(query) {
+async function searchCandidates(query, excludeIds = []) {
   try {
     const res = await fetch(`${BIBLE_SEARCH}/search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, n: 25, diversity: 0.35 }),
+      body: JSON.stringify({ query, n: 15, diversity: 0.35, exclude_ids: excludeIds }),
       signal: AbortSignal.timeout(25000),
     })
     if (!res.ok) return null
@@ -121,7 +123,7 @@ function formatCandidatesForLLM(candidates) {
     if (c.spiritual?.length)                  tagParts.push(`Spirituell: ${c.spiritual.join(', ')}`)
     if (tagParts.length) lines.push(tagParts.join(' | '))
 
-    lines.push(`Text: ${c.text.slice(0, 400)}…`)
+    lines.push(`Text: ${c.text.slice(0, 200)}…`)
 
     return lines.join('\n')
   }).join('\n\n')
@@ -172,7 +174,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' })
   }
 
-  const { messages = [] } = req.body
+  const { messages = [], excludeIds = [] } = req.body
 
   // SSE öffnen
   res.writeHead(200, {
@@ -185,7 +187,7 @@ export default async function handler(req, res) {
   try {
     // RAG-Suche parallel starten
     const query      = buildSearchQuery(messages)
-    const candidates = await searchCandidates(query)
+    const candidates = await searchCandidates(query, excludeIds)
     const useRAG     = candidates && candidates.length >= 5
 
     let systemPrompt, userContent
@@ -219,7 +221,7 @@ export default async function handler(req, res) {
           ...messages,
           { role: 'user',   content: userContent },
         ],
-        max_tokens: 2500,
+        max_tokens: 4000,
         temperature: 0.6,
       })
     })
@@ -334,6 +336,7 @@ export default async function handler(req, res) {
     }
 
     console.log(`Reflect fertig: RAG=${useRAG}, Stellen: ${parsed.passages.map(p=>p.reference).join(', ')}`)
+    incrementStats()
     res.write(`data: ${JSON.stringify(parsed)}\n\n`)
     res.end()
 

@@ -1,5 +1,23 @@
 import { logEvent } from '../logger.js'
 
+const SEEN_KEY = 'mbk_seen_sections'
+const MAX_SEEN = 200
+
+export function markSectionSeen(sectionId) {
+  try {
+    const seen = JSON.parse(localStorage.getItem(SEEN_KEY) || '[]')
+    if (!seen.includes(sectionId)) {
+      seen.push(sectionId)
+      if (seen.length > MAX_SEEN) seen.splice(0, seen.length - MAX_SEEN)
+      localStorage.setItem(SEEN_KEY, JSON.stringify(seen))
+    }
+  } catch {}
+}
+
+export function getSeenSectionIds() {
+  try { return JSON.parse(localStorage.getItem(SEEN_KEY) || '[]') } catch { return [] }
+}
+
 const LOADING_MESSAGES = [
   'Deine Reflexion wird zusammengestellt…',
   'Bibelstellen werden ausgewählt…',
@@ -53,7 +71,10 @@ export async function renderSummary(messages, onReady) {
       const res = await fetch('/api/reflect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages })
+        body: JSON.stringify({
+          messages,
+          excludeIds: getSeenSectionIds()
+        })
       })
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`)

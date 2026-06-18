@@ -40,6 +40,10 @@ const server = http.createServer(async (req, res) => {
 
     try {
       const route = req.url.replace('/api/', '').split('?')[0]
+      // Nur alphanumerische Routen + Bindestriche erlauben
+      if (!/^[a-z0-9-]+$/.test(route)) {
+        res.writeHead(404); res.end(); return
+      }
       const mod = await import(`./api/${route}.js?t=${Date.now()}`)
       await mod.default(req, res)
     } catch (err) {

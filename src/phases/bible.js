@@ -1,5 +1,6 @@
 import { fetchVerses, renderVerses } from '../bible-parser.js'
 import { exportSession, logResult } from '../logger.js'
+import { markSectionSeen } from './summary.js'
 import QRCode from 'qrcode'
 
 // Ganzes Kapitel laden
@@ -81,6 +82,14 @@ export async function renderBible(data, loggingEnabled) {
         <!-- Ganzes Kapitel (aufklappbar) -->
         <div class="enrich-section" id="chapter-section-${i}" style="display:none">
           <div class="bible-text bible-text-full" id="bible-chapter-${i}"></div>
+        </div>
+
+        <!-- Feedback-Buttons -->
+        <div class="feedback-row" id="feedback-row-${i}">
+          <button class="feedback-btn" data-card="${i}" data-type="too_common" title="Kenne ich schon / kommt zu häufig">🔄</button>
+          <button class="feedback-btn" data-card="${i}" data-type="good"       title="Passt gut">👍</button>
+          <button class="feedback-btn" data-card="${i}" data-type="great"      title="Trifft mich sehr">❤️</button>
+          <button class="feedback-btn" data-card="${i}" data-type="favorite"   title="Favorit">⭐</button>
         </div>
 
         <!-- Aktions-Buttons -->
@@ -179,6 +188,48 @@ export async function renderBible(data, loggingEnabled) {
 
   QRCode.toCanvas(document.getElementById('qr-canvas'), window.location.origin, {
     width: 160, margin: 1, color: { dark: '#1a3028', light: '#ffffff' }
+  })
+
+  // ── Gesehene Stellen tracken + Feedback-Buttons ───────────────────
+  passages.forEach((p, i) => {
+    // Section-ID aus Buch+Kapitel+Vers konstruieren (wie in ChromaDB)
+    const sectionId = `${p.book}_${p.chapter}_${p.startVerse}`
+    markSectionSeen(sectionId)
+
+    // Feedback-Buttons verdrahten
+    const FEEDBACK_KEY = `mbk_fb_${sectionId}`
+    const existingFeedback = localStorage.getItem(FEEDBACK_KEY)
+
+    document.querySelectorAll(`[data-card="${i}"].feedback-btn`).forEach(btn => {
+      const type = btn.dataset.type
+
+      // Bereits abgegebenes Feedback wiederherstellen
+      if (existingFeedback === type) {
+        btn.classList.add('feedback-active')
+        btn.disabled = true
+      }
+
+      btn.addEventListener('click', async () => {
+        // Nur einmal pro Stelle (über alle Sessions)
+        if (localStorage.getItem(FEEDBACK_KEY)) return
+
+        localStorage.setItem(FEEDBACK_KEY, type)
+        btn.classList.add('feedback-active')
+
+        // Alle anderen Buttons dieser Karte deaktivieren
+        document.querySelectorAll(`[data-card="${i}"].feedback-btn`).forEach(b => {
+          b.disabled = true
+        })
+
+        try {
+          await fetch('/api/feedback', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ section_id: sectionId, type })
+          })
+        } catch {}
+      })
+    })
   })
 
   // ── Bibeltext-Auszüge laden ────────────────────────────────────────

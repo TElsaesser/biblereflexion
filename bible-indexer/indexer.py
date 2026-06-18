@@ -25,6 +25,9 @@ DATA_DIR.mkdir(exist_ok=True)
 SECTIONS_FILE = DATA_DIR / "sections.json"
 TAGGED_FILE   = DATA_DIR / "tagged.json"
 
+SECTIONS_FILE_V2 = DATA_DIR / "sections_v2.json"
+TAGGED_FILE_V2   = DATA_DIR / "tagged_v2.json"
+
 ONE_API_BASE = os.getenv("ONE_API_BASE_URL", "https://ai.ytels.de/v1")
 ONE_API_KEY  = os.getenv("ONE_API_KEY", "")
 MODEL        = os.getenv("ONE_API_MODEL", "deepseek-ai/DeepSeek-V4-Flash")
@@ -284,13 +287,15 @@ def call_llm_tag(section: dict) -> dict | None:
         return None
 
 
-def cmd_tag(resume=True, concurrency=5):
-    print("Schritt 2: LLM-Tagging (parallel) …")
-    sections = json.loads(SECTIONS_FILE.read_text(encoding="utf-8"))
+def cmd_tag(resume=True, sections_file=None, tagged_file=None, concurrency=5):
+    sections_file = sections_file or SECTIONS_FILE
+    tagged_file   = tagged_file   or TAGGED_FILE
+    print(f"Schritt 2: LLM-Tagging ({sections_file.name}) …")
+    sections = json.loads(sections_file.read_text(encoding="utf-8"))
 
     already_tagged = set()
-    if resume and TAGGED_FILE.exists():
-        tagged = json.loads(TAGGED_FILE.read_text(encoding="utf-8"))
+    if resume and tagged_file.exists():
+        tagged = json.loads(tagged_file.read_text(encoding="utf-8"))
         already_tagged = {s["id"] for s in tagged if s.get("tags")}
         print(f"  Überspringe {len(already_tagged)} bereits getaggte Abschnitte")
     else:
@@ -318,7 +323,7 @@ def cmd_tag(resume=True, concurrency=5):
                         if tags is None:
                             errors[0] += 1
                         if done_count[0] % 50 == 0:
-                            _save_tagged(tagged_map, sections)
+                            _save_tagged(tagged_map, sections, tagged_file)
                         progress.update(1)
 
             tasks = [tag_one(s) for s in to_tag]
@@ -327,45 +332,46 @@ def cmd_tag(resume=True, concurrency=5):
         progress.close()
 
     asyncio.run(run())
-    _save_tagged(tagged_map, sections)
+    _save_tagged(tagged_map, sections, tagged_file)
     tagged_count = sum(1 for s in tagged_map.values() if s.get("tags"))
-    print(f"→ {tagged_count}/{len(sections)} Abschnitte getaggt in {TAGGED_FILE}")
+    print(f"→ {tagged_count}/{len(sections)} Abschnitte getaggt in {tagged_file}")
 
 
-def _save_tagged(tagged_map, sections):
-    # Reihenfolge der Original-Sections beibehalten
+def _save_tagged(tagged_map, sections, out_file=None):
+    out_file = out_file or TAGGED_FILE
     result = []
     for s in sections:
         if s["id"] in tagged_map:
             result.append(tagged_map[s["id"]])
         else:
             result.append(s)
-    TAGGED_FILE.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    out_file.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 # ──────────────────────────────────────────────────────────────────────
 # SCHRITT 3: Embeddings + ChromaDB
 # ──────────────────────────────────────────────────────────────────────
 
-def cmd_embed():
+def cmd_embed(tagged_file=None, chroma_path=None, collection_name="bible_sections"):
     import chromadb
     from sentence_transformers import SentenceTransformer
 
-    print("Schritt 3: Embeddings erzeugen und in ChromaDB speichern …")
+    tagged_file = tagged_file or (TAGGED_FILE if TAGGED_FILE.exists() else SECTIONS_FILE)
+    chroma_path = chroma_path or (Path(__file__).parent / "chroma_db")
 
-    source = TAGGED_FILE if TAGGED_FILE.exists() else SECTIONS_FILE
-    sections = json.loads(source.read_text(encoding="utf-8"))
+    print(f"Schritt 3: Embeddings → {chroma_path.name} (Collection: {collection_name}) …")
+
+    sections = json.loads(tagged_file.read_text(encoding="utf-8"))
     print(f"  Lade Modell 'intfloat/multilingual-e5-large' …")
     model = SentenceTransformer("intfloat/multilingual-e5-large")
 
-    chroma_path = Path(__file__).parent / "chroma_db"
     client = chromadb.PersistentClient(path=str(chroma_path))
     try:
-        client.delete_collection("bible_sections")
+        client.delete_collection(collection_name)
     except Exception:
         pass
     collection = client.create_collection(
-        "bible_sections",
+        collection_name,
         metadata={"hnsw:space": "cosine"},
     )
 
@@ -422,6 +428,176 @@ def cmd_embed():
 
 
 # ──────────────────────────────────────────────────────────────────────
+# V2: Parser mit <br-p>-Aufteilung
+# ──────────────────────────────────────────────────────────────────────
+
+MIN_VERSES_V2 = 4   # Abschnitt muss mindestens 4 Verse haben
+MAX_VERSES_V2 = 22  # Abschnitt darf maximal 22 Verse haben
+
+def parse_chapter_file_v2(html_path: Path) -> list[dict]:
+    """
+    Wie parse_chapter_file, aber teilt zusätzlich an <span class='br-p'>-Absatzmarkern auf.
+    Ergibt kürzere, thematisch einheitlichere Abschnitte.
+    """
+    testament = "nt" if html_path.parent.name == "nt" else "ot"
+    filename  = html_path.stem
+    parts     = filename.rsplit("_", 1)
+    book      = nfc(parts[0])
+    chapter   = int(parts[1])
+
+    text = html_path.read_text(encoding="utf-8")
+    soup = BeautifulSoup(text, "html.parser")
+
+    title_tag = soup.find("title")
+    full_book_name = ""
+    if title_tag:
+        t = title_tag.get_text()
+        m = re.match(r".+?–\s*(.+?)\s*–", t)
+        if m:
+            full_book_name = m.group(1).strip()
+
+    verse_divs = soup.select("div.v[id]")
+    if not verse_divs:
+        return []
+
+    # Jeden Vers parsen: Text, Vers-Nr., hat h3, hat br-p (Absatzende)
+    parsed_verses = []
+    for div in verse_divs:
+        verse_id = div.get("id", "")
+        if not verse_id.startswith("v"):
+            continue
+        try:
+            verse_num = int(verse_id[1:])
+        except ValueError:
+            continue
+
+        h3 = div.find("h3")
+        heading = h3.get_text(strip=True) if h3 else None
+        has_brp = bool(div.find("span", class_="br-p"))
+
+        clone = BeautifulSoup(str(div), "html.parser").find("div")
+        for tag in clone.find_all(["sup", "h3", "span"],
+                                   class_=lambda c: c and ("fnm" in c or "vn" in c or "br-p" in c)):
+            tag.decompose()
+        verse_text = re.sub(r"\s+", " ", clone.get_text(" ", strip=True)).strip()
+
+        parsed_verses.append({
+            "num": verse_num,
+            "text": verse_text,
+            "heading": heading,
+            "paragraph_end": has_brp,
+        })
+
+    if not parsed_verses:
+        return []
+
+    # Abschnitte bilden: h3 oder br-p = potenzielle Grenze
+    raw_sections = []
+    current = []
+    current_heading = parsed_verses[0]["heading"] if parsed_verses else None
+
+    for v in parsed_verses:
+        if v["heading"] and current:
+            # h3 = harte Grenze: immer teilen
+            raw_sections.append((current_heading, current))
+            current = []
+            current_heading = v["heading"]
+        current.append(v)
+        if v["paragraph_end"] and len(current) >= MIN_VERSES_V2:
+            # br-p = weiche Grenze: nur teilen wenn Mindestlänge erreicht
+            raw_sections.append((current_heading, current))
+            current = []
+            current_heading = None
+
+    if current:
+        raw_sections.append((current_heading, current))
+
+    # Zu kurze Abschnitte mit dem nächsten zusammenführen
+    merged = []
+    i = 0
+    while i < len(raw_sections):
+        heading, verses = raw_sections[i]
+        if len(verses) < MIN_VERSES_V2 and i + 1 < len(raw_sections):
+            next_h, next_v = raw_sections[i + 1]
+            raw_sections[i + 1] = (heading or next_h, verses + next_v)
+            i += 1
+            continue
+        merged.append((heading, verses))
+        i += 1
+
+    # Zu lange Abschnitte halbieren (Fallback)
+    final = []
+    for heading, verses in merged:
+        if len(verses) > MAX_VERSES_V2:
+            mid = len(verses) // 2
+            final.append((heading, verses[:mid]))
+            final.append((None, verses[mid:]))
+        else:
+            final.append((heading, verses))
+
+    # Zu Sections-Dicts konvertieren
+    sections = []
+    for heading, verses in final:
+        if not verses:
+            continue
+        verses_text = " ".join(v["text"] for v in verses if v["text"])
+        start_v = verses[0]["num"]
+        end_v   = verses[-1]["num"]
+        sections.append({
+            "id":          f"{book}_{chapter}_{start_v}",
+            "book":        book,
+            "book_name":   full_book_name,
+            "chapter":     chapter,
+            "testament":   testament,
+            "start_verse": start_v,
+            "end_verse":   end_v,
+            "heading":     heading or "",
+            "text":        verses_text,
+            "word_count":  len(verses_text.split()),
+            "reference":   f"{book} {chapter},{start_v}–{end_v}",
+            "popularity":  0,
+            "tags":        None,
+        })
+
+    return sections
+
+
+def cmd_parse_v2():
+    print("Schritt 1 (v2): HTML-Dateien mit <br-p>-Aufteilung parsen …")
+    all_sections = []
+
+    html_files = []
+    for testament in ("ot", "nt"):
+        for f in sorted((BIBLE_DIR / testament).glob("*.html")):
+            html_files.append(f)
+
+    for f in tqdm(html_files, unit="Kapitel"):
+        try:
+            secs = parse_chapter_file_v2(f)
+            all_sections.extend(secs)
+        except Exception as e:
+            print(f"\nFehler bei {f.name}: {e}")
+
+    # IDs deduplizieren
+    seen = {}
+    for s in all_sections:
+        base = s["id"]
+        if base in seen:
+            seen[base] += 1
+            s["id"] = f"{base}_{seen[base]}"
+        else:
+            seen[base] = 0
+
+    SECTIONS_FILE_V2.write_text(
+        json.dumps(all_sections, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    words = [s["word_count"] for s in all_sections]
+    print(f"→ {len(all_sections)} Abschnitte in {SECTIONS_FILE_V2}")
+    print(f"  Min: {min(words)}, Max: {max(words)}, Median: {sorted(words)[len(words)//2]} Wörter")
+
+
+# ──────────────────────────────────────────────────────────────────────
 # CLI
 # ──────────────────────────────────────────────────────────────────────
 
@@ -437,10 +613,36 @@ if __name__ == "__main__":
         cmd_parse()
         cmd_tag()
         cmd_embed()
+    elif cmd == "parse_v2":
+        cmd_parse_v2()
+    elif cmd == "tag_v2":
+        cmd_tag(
+            sections_file=SECTIONS_FILE_V2,
+            tagged_file=TAGGED_FILE_V2,
+        )
+    elif cmd == "embed_v2":
+        cmd_embed(
+            tagged_file=TAGGED_FILE_V2,
+            chroma_path=Path(__file__).parent / "chroma_db_v2",
+            collection_name="bible_sections_v2",
+        )
+    elif cmd == "all_v2":
+        cmd_parse_v2()
+        cmd_tag(sections_file=SECTIONS_FILE_V2, tagged_file=TAGGED_FILE_V2)
+        cmd_embed(
+            tagged_file=TAGGED_FILE_V2,
+            chroma_path=Path(__file__).parent / "chroma_db_v2",
+            collection_name="bible_sections_v2",
+        )
     else:
-        print("Usage: python indexer.py [parse|tag|embed|all]")
+        print("Usage: python indexer.py [parse|tag|embed|all|parse_v2|tag_v2|embed_v2|all_v2]")
         print()
-        print("  parse  — HTML-Dateien parsen → data/sections.json")
-        print("  tag    — Abschnitte mit LLM taggen → data/tagged.json")
-        print("  embed  — Embeddings erzeugen → chroma_db/")
-        print("  all    — Alle Schritte nacheinander")
+        print("  parse      — HTML parsen → data/sections.json")
+        print("  tag        — LLM-Tagging → data/tagged.json")
+        print("  embed      — Embeddings → chroma_db/")
+        print("  all        — Alle Schritte (v1)")
+        print()
+        print("  parse_v2   — HTML parsen mit <br-p>-Aufteilung → data/sections_v2.json")
+        print("  tag_v2     — LLM-Tagging → data/tagged_v2.json")
+        print("  embed_v2   — Embeddings → chroma_db_v2/")
+        print("  all_v2     — Alle Schritte (v2)")

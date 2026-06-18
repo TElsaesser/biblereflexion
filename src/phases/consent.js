@@ -71,6 +71,12 @@ export function renderConsent(onStart) {
               <span class="ai-status-dot ai-status-pending"></span> Wird geprüft…
             </span>
           </div>
+          <div class="ai-info-row">
+            <span class="ai-info-label">Reflexionen</span>
+            <span class="ai-info-value" id="ai-info-stats">
+              <a href="#" id="ai-stats-link" class="ai-stats-link">Heute: …</a>
+            </span>
+          </div>
         </div>
 
         <p class="consent-footer">Verarbeitung über anonyme API &nbsp;·&nbsp; Kein Nutzerkonto erforderlich</p>

@@ -53,6 +53,12 @@ const server = http.createServer(async (req, res) => {
   if (req.url === '/api/info') {
     return runHandler(join(__dir, 'api/info.js'), req, res)
   }
+  if (req.url === '/api/stats') {
+    return runHandler(join(__dir, 'api/stats.js'), req, res)
+  }
+  if (req.url === '/api/feedback') {
+    return runHandler(join(__dir, 'api/feedback.js'), req, res)
+  }
 
   res.statusCode = 404
   res.end('Not found')

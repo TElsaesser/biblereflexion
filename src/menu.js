@@ -4,6 +4,7 @@ import { marked } from 'marked'
 marked.setOptions({ gfm: true, breaks: false })
 
 export function loadAiInfo() {
+  // KI-Status + Geo
   fetch('/api/info')
     .then(r => r.json())
     .then(info => {
@@ -52,6 +53,56 @@ export function loadAiInfo() {
       const statusEl = document.getElementById('ai-info-status')
       if (statusEl) statusEl.innerHTML = `<span class="ai-status-dot ai-status-err"></span> Nicht erreichbar`
     })
+
+  // Tages-Statistik
+  fetch('/api/stats')
+    .then(r => r.json())
+    .then(stats => {
+      const linkEl = document.getElementById('ai-stats-link')
+      if (!linkEl) return
+      linkEl.textContent = `Heute: ${stats.today}`
+      linkEl.addEventListener('click', e => {
+        e.preventDefault()
+        showStatsModal(stats.history)
+      })
+    })
+    .catch(() => {
+      const linkEl = document.getElementById('ai-stats-link')
+      if (linkEl) linkEl.textContent = 'Heute: —'
+    })
+}
+
+function showStatsModal(history) {
+  const existing = document.getElementById('stats-modal')
+  if (existing) existing.remove()
+
+  const total = history.reduce((s, d) => s + d.count, 0)
+
+  const modal = document.createElement('div')
+  modal.id = 'stats-modal'
+  modal.className = 'stats-modal'
+  modal.innerHTML = `
+    <div class="stats-modal-box">
+      <div class="stats-modal-header">
+        <span>Reflexionen gesamt: <strong>${total}</strong></span>
+        <button class="menu-close" id="stats-close">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="stats-modal-body">
+        <table class="stats-table">
+          <thead><tr><th>Datum</th><th>Reflexionen</th></tr></thead>
+          <tbody>
+            ${history.map(d => `<tr><td>${d.date}</td><td>${d.count}</td></tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="stats-modal-backdrop"></div>
+  `
+  document.body.appendChild(modal)
+  document.getElementById('stats-close').addEventListener('click', () => modal.remove())
+  modal.querySelector('.stats-modal-backdrop').addEventListener('click', () => modal.remove())
 }
 
 const DOCS = [
